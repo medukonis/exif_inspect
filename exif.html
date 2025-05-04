@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Photo Metadata Extractor (Client-Side)</title>
+    <style>
+        /* CSS styles remain the same as your original file */
+        body {
+            background-color: #232323;  /* Dark background */
+            color: #e0e0e0;  /* Light text color */
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+        h1, h2, h3 {
+            color: #ffffff;
+        }
+        textarea {
+            background-color: #333333;  /* Darker background for textarea */
+            color: #ffffff;  /* White text for textarea */
+            border: 1px solid #555555;  /* Dark border */
+            border-radius: 5px;
+            padding: 10px;
+            font-size: 16px;
+        }
+        #drop-area {
+            border: 2px dashed #ccc;
+            padding: 20px;
+            width: 30%;
+            margin: 20px auto;
+            text-align: center; /* Center text in drop area */
+        }
+        #drop-area.highlight {
+            border-color: blue;
+        }
+        #file-input {
+            display: none;
+        }
+        .metadata {
+            margin-top: 20px;
+            font-size: 16px; /* Slightly smaller font */
+            text-align: left;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+            background-color: #333; /* Added background for clarity */
+            padding: 15px;
+            border-radius: 5px;
+        }
+        #image-preview {
+            max-width: 300px;
+            max-height: 300px;
+            margin: 15px auto;
+            display: none; /* Initially hidden */
+        }
+        #loading {
+            display: none; /* Initially hidden */
+            margin: 20px auto;
+            text-align: center; /* Center loading text */
+        }
+        #map {
+            height: 400px;
+            width: 100%;
+            max-width: 600px;
+            margin: 20px auto;
+            display: none; /* Initially hidden */
+            border-radius: 8px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        }
+        .address-input {
+             margin-bottom: 20px;
+             text-align: left;
+             max-width: 600px;
+             margin-left: auto;
+             margin-right: auto;
+        }
+         #expected-address-display {
+             margin-top: 10px;
+             font-style: italic;
+         }
+         button { /* General button styling */
+             padding: 8px 15px;
+             background-color: #4285F4;
+             color: white;
+             border: none;
+             border-radius: 4px;
+             cursor: pointer;
+             font-size: 14px;
+         }
+         button:hover {
+             background-color: #357ae8;
+         }
+         input[type="text"] { /* Input field styling */
+             padding: 8px;
+             margin-right: 10px;
+             border: 1px solid #555;
+             background-color: #444;
+             color: #eee;
+             border-radius: 4px;
+         }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/exifr/dist/full.umd.js"></script>
+</head>
+<body>
+    <center><h1>Compare Photo Metadata Location with Damaged Property Address</h1></center><br>
+    <div class="address-input">
+        <h3>Step 1: Enter the damaged property address and click "Save Address" button</h3>
+        <input type="text" id="address-input" placeholder="Enter expected address" style="width: 60%;">
+        <button id="geocode-btn">Save Address</button>
+        <p id="expected-address-display"></p>
+    </div><br><br>
+
+
+    <div id="drop-area">
+    <h3>Step 2: Upload or Drag & Drop a Photo</h3>
+        <p>Drag & Drop an image here or <label for="file-input" style="color: #4285F4; cursor: pointer;">click to upload</label></p>
+        <input type="file" id="file-input" accept="image/*,image/heic,image/heif">
+    </div>
+    <center><img id="image-preview" alt="Image preview"></center>
+    <div id="loading">Loading metadata... please wait</div>
+    <div class="metadata" id="metadata"></div>
+    <div id="map"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/exifr/dist/full.umd.js"></script>
+    <script>
+        const dropArea = document.getElementById("drop-area");
+        const fileInput = document.getElementById("file-input");
+        const metadataDiv = document.getElementById("metadata");
+        const imagePreview = document.getElementById("image-preview");
+        const loading = document.getElementById("loading");
+        const mapDiv = document.getElementById("map");
+    
+        let map;
+        let photoMarker, expectedMarker, mapLine;
+        let expectedLat, expectedLng;
+        let photoLat, photoLng;
+    
+        // Google Maps Initialization
+        function initMap() {
+            const defaultCenter = { lat: 38.75, lng: -77.48 };
+            map = new google.maps.Map(mapDiv, {
+                center: defaultCenter,
+                zoom: 8
+            });
+        }
+    
+        // Geocode Address
+        async function geocodeAddress(address) {
+            const geocoder = new google.maps.Geocoder();
+            return new Promise((resolve, reject) => {
+                geocoder.geocode({ address }, (results, status) => {
+                    if (status === 'OK') {
+                        resolve(results[0]);
+                    } else {
+                        reject('Geocode failed: ' + status);
+                    }
+                });
+            });
+        }
+    
+        // Reverse Geocode Photo Location
+        async function reverseGeocodePhotoLocation(lat, lng) {
+            const geocoder = new google.maps.Geocoder();
+            return new Promise((resolve, reject) => {
+                geocoder.geocode({ location: { lat, lng } }, (results, status) => {
+                    if (status === 'OK') {
+                        resolve(results[0]?.formatted_address || "No address found");
+                    } else {
+                        reject('Reverse geocode failed: ' + status);
+                    }
+                });
+            });
+        }
+    
+        // Calculate Distance (Haversine)
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+            if ([lat1, lon1, lat2, lon2].some(v => v == null)) return null;
+            const R = 6371;
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(lat1 * Math.PI/180) * Math.cos(lat2 * Math.PI/180) *
+                      Math.sin(dLon/2) * Math.sin(dLon/2);
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        }
+    
+        // Update Map Display
+        function updateMapDisplay() {
+            if (!map) return;
+    
+            mapDiv.style.display = "block";
+    
+            if (photoMarker) photoMarker.setMap(null);
+            if (expectedMarker) expectedMarker.setMap(null);
+            if (mapLine) mapLine.setMap(null);
+    
+            const bounds = new google.maps.LatLngBounds();
+            let hasPhoto = false, hasExpected = false;
+    
+            if (photoLat != null && photoLng != null) {
+                hasPhoto = true;
+                const pos = { lat: photoLat, lng: photoLng };
+                photoMarker = new google.maps.Marker({
+                    position: pos,
+                    map,
+                    animation: google.maps.Animation.DROP,
+                    icon: { path: google.maps.SymbolPath.CIRCLE, fillColor: '#4285F4', fillOpacity: 1, strokeColor: 'white', strokeWeight: 1.5, scale: 8 },
+                    label: { text: "Photo", color: "#FFFFFF", fontWeight: "bold", fontSize: "11px" }
+                });
+                bounds.extend(pos);
+            }
+    
+            if (expectedLat != null && expectedLng != null) {
+                hasExpected = true;
+                const pos = { lat: expectedLat, lng: expectedLng };
+                expectedMarker = new google.maps.Marker({
+                    position: pos,
+                    map,
+                    animation: google.maps.Animation.DROP,
+                    icon: { path: google.maps.SymbolPath.CIRCLE, fillColor: '#DB4437', fillOpacity: 1, strokeColor: 'white', strokeWeight: 1.5, scale: 8 },
+                    label: { text: "Property", color: "#FFFFFF", fontWeight: "bold", fontSize: "11px" }
+                });
+                bounds.extend(pos);
+            }
+    
+            if (hasPhoto && hasExpected) {
+                mapLine = new google.maps.Polyline({
+                    path: [ { lat: photoLat, lng: photoLng }, { lat: expectedLat, lng: expectedLng } ],
+                    geodesic: true,
+                    strokeColor: '#F4B400',
+                    strokeOpacity: 0.9,
+                    strokeWeight: 3,
+                    map
+                });
+            }
+    
+            if (hasPhoto || hasExpected) {
+                if (bounds.getNorthEast().equals(bounds.getSouthWest())) {
+                    map.setCenter(bounds.getCenter());
+                    map.setZoom(15);
+                } else {
+                    map.fitBounds(bounds);
+                    google.maps.event.addListenerOnce(map, 'bounds_changed', function() {
+                        if (map.getZoom() > 16) map.setZoom(16);
+                        if (map.getZoom() < 3) map.setZoom(3);
+                    });
+                }
+            }
+        }
+    
+        // Display Distance Info
+        function displayDistanceInfo() {
+            const distanceKm = calculateDistance(photoLat, photoLng, expectedLat, expectedLng);
+            const distanceDiv = document.getElementById('distance-info');
+            if (!distanceDiv) return;
+    
+            if (distanceKm != null) {
+                const distanceMiles = distanceKm * 0.621371;
+                distanceDiv.innerHTML = `
+                    <div style="margin-top: 15px; padding: 10px; background-color: #444; border: 1px solid #555; border-radius: 5px;">
+                        <p><strong>Distance between property and photo:</strong><br>
+                        ${distanceMiles.toFixed(2)} miles (${distanceKm.toFixed(2)} km)</p>
+                    </div>
+                `;
+            } else {
+                distanceDiv.innerHTML = `<p><em>Cannot calculate distance (missing coordinates).</em></p>`;
+            }
+        }
+    
+        // Main File Handler
+        async function handleFile(file) {
+            if (!file) {
+                alert("No file selected.");
+                return;
+            }
+    
+            let fileType = file.type;
+            const fileName = file.name.toLowerCase();
+            if (fileName.endsWith('.heic') || fileName.endsWith('.heif')) {
+                fileType = "image/heic";
+            }
+            if (!fileType.startsWith('image/')) {
+                alert("Please upload a valid image file.");
+                return;
+            }
+    
+            loading.style.display = "block";
+            metadataDiv.innerHTML = "";
+            metadataDiv.style.display = "none";
+            mapDiv.style.display = "none";
+            photoLat = photoLng = null;
+            if (photoMarker) photoMarker.setMap(null);
+            if (mapLine) mapLine.setMap(null);
+    
+            const url = URL.createObjectURL(file);
+            imagePreview.src = url;
+            imagePreview.style.display = "block";
+            imagePreview.onload = () => URL.revokeObjectURL(url);
+    
+            try {
+                const options = { translateKeys: true, translateValues: true, reviveValues: true, sanitize: true };
+                let exifData = await exifr.parse(file, options);
+                if (!exifData) {
+                    exifData = await exifr.gps(file);
+                }
+    
+                loading.style.display = "none";
+                metadataDiv.style.display = "block";
+    
+                const dateTaken = exifData?.DateTimeOriginal || exifData?.CreateDate || exifData?.ModifyDate;
+                photoLat = exifData?.latitude ?? null;
+                photoLng = exifData?.longitude ?? null;
+    
+                metadataDiv.innerHTML = `
+                    <h3>Image Metadata:</h3>
+                    <p>Date Taken: ${dateTaken ? dateTaken.toLocaleString() : "Unknown"}</p>
+                    <p>Photo GPS Coordinates: ${photoLat?.toFixed(6) ?? "N/A"}, ${photoLng?.toFixed(6) ?? "N/A"}</p>
+                    <p id="photo-address">Approx. Photo Address: Loading...</p>
+                    <p><a href="https://www.google.com/maps?q=${photoLat},${photoLng}" target="_blank" style="color: #8ab4f8;">Open Photo Location in Google Maps</a></p>
+                    <div id="distance-info"></div>
+                `;
+    
+                if (photoLat != null && photoLng != null) {
+                    const address = await reverseGeocodePhotoLocation(photoLat, photoLng);
+                    document.getElementById('photo-address').textContent = `Approx. Photo Address: ${address}`;
+                } else {
+                    document.getElementById('photo-address').textContent = `Approx. Photo Address: No GPS found`;
+                }
+    
+                updateMapDisplay();
+                displayDistanceInfo();
+    
+            } catch (error) {
+                loading.style.display = "none";
+                metadataDiv.style.display = "block";
+                metadataDiv.innerHTML = `<p style="color: #F28B82;">Error extracting metadata: ${error.message}</p>`;
+                console.error("EXIF Parsing Error:", error);
+            }
+        }
+    
+        // Event Listeners
+        document.getElementById('geocode-btn').addEventListener('click', async () => {
+            const address = document.getElementById('address-input').value.trim();
+            if (!address) {
+                alert('Please enter an address.');
+                return;
+            }
+    
+            try {
+                const result = await geocodeAddress(address);
+                expectedLat = result.geometry.location.lat();
+                expectedLng = result.geometry.location.lng();
+                document.getElementById('expected-address-display').textContent = `Damaged property address: ${result.formatted_address}`;
+                updateMapDisplay();
+                displayDistanceInfo();
+            } catch (err) {
+                alert(err);
+                document.getElementById('expected-address-display').textContent = 'Could not find address.';
+                expectedLat = expectedLng = null;
+                updateMapDisplay();
+            }
+        });
+    
+        document.getElementById('address-input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                document.getElementById('geocode-btn').click();
+            }
+        });
+    
+        dropArea.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            dropArea.classList.add("highlight");
+        });
+    
+        dropArea.addEventListener("dragleave", () => {
+            dropArea.classList.remove("highlight");
+        });
+    
+        dropArea.addEventListener("drop", (e) => {
+            e.preventDefault();
+            dropArea.classList.remove("highlight");
+            const files = e.dataTransfer.files;
+            if (files.length > 0) handleFile(files[0]);
+        });
+    
+        fileInput.addEventListener("change", (e) => {
+            const file = e.target.files[0];
+            if (file) handleFile(file);
+        });
+    </script>
+    
+    <script src="https://maps.googleapis.com/maps/api/js?key=insert_your_key_here&callback=initMap&libraries=geometry,geocoding" async defer></script>
+</body>
+</html>
